@@ -1,0 +1,22 @@
+# Compiled outputs
+target/
+**/*.rs.bk
+**/*.bk
+
+# Cargo.lock is tracked for binary crates
+# Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Debug information
+*.dSYM/
+*.pdb
