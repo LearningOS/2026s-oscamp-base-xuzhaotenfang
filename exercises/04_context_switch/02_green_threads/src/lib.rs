@@ -205,11 +205,13 @@ impl Scheduler {
     let old_ctx: *mut TaskContext = &mut self.threads[self.current].ctx;
     let new_ctx: *const TaskContext = &self.threads[next].ctx;
 
+    self.current = next;
+
     unsafe {
         switch_context(&mut *old_ctx, &*new_ctx);
     }
 
-    self.current = next;
+    
     }
 }
 

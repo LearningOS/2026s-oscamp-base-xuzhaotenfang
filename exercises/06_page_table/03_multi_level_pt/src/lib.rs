@@ -34,6 +34,8 @@ pub const PTE_X: u64 = 1 << 3;
 
 /// PPN 在 PTE 中的偏移
 const PPN_SHIFT: u32 = 10;
+/// PTE 中 44 位物理页号字段的掩码
+const PPN_MASK: u64 = (1 << 44) - 1;
 
 /// 页表节点：一个包含 512 个条目的数组
 #[derive(Clone)]
@@ -103,7 +105,8 @@ impl Sv39PageTable {
     /// 提示：右移 (12 + level * 9) 位，然后与 0x1FF 做掩码。
     pub fn extract_vpn(va: u64, level: usize) -> usize {
         // TODO: 从虚拟地址中提取指定级别的 VPN 索引
-        todo!()
+        let shift = 12 + level * 9;
+        ((va >> shift) & 0x1FF) as usize
     }
 
     /// 建立从虚拟页到物理页的映射（4KB 页）。
@@ -119,7 +122,24 @@ impl Sv39PageTable {
         // 对于中间层级（level 2 和 level 1），如果对应 VPN 的页表项（PTE）无效（PTE_V == 0），
         // 则需要分配一个新的页表节点（使用 alloc_node），并将新节点的 PPN 写入当前 PTE（仅设置 PTE_V 标志）。
         // 最后在 level 0 的 PTE 中写入目标物理页号（pa >> 12）和 flags。
-        todo!()
+        // todo!()
+        let mut current_ppn = self.root_ppn;
+        for level in (1..=2).rev() {
+            let vpn = Self::extract_vpn(va, level);
+            let pte = self.nodes[&current_ppn].entries[vpn];
+            if (pte & PTE_V) == 0 {
+                let new_ppn = self.alloc_node();
+                self.nodes.get_mut(&current_ppn).unwrap().entries[vpn] =
+                    (new_ppn << PPN_SHIFT) | PTE_V;
+                current_ppn = new_ppn;
+            } else {
+                current_ppn = (pte >> PPN_SHIFT) & PPN_MASK;
+            }
+        }
+        let vpn = Self::extract_vpn(va, 0);
+        let ppn = pa >> 12;
+        self.nodes.get_mut(&current_ppn).unwrap().entries[vpn] =
+            (ppn << PPN_SHIFT) | flags;
     }
 
     /// 遍历三级页表，将虚拟地址翻译为物理地址。
@@ -141,7 +161,31 @@ impl Sv39PageTable {
         // 如果 PTE 是叶节点（即 R、W、X 标志位中有至少一个被置位），则可以直接使用该 PTE 中的物理页号（PPN）计算最终的物理地址。
         // 否则，该 PTE 指向下一级页表节点，继续遍历下一级。
         // 遍历到 level 0 时，PTE 必须是叶节点。
-        todo!()
+        // todo!()
+        let mut current_ppn = self.root_ppn;
+        for level in (0..=2).rev() {
+            let vpn = Self::extract_vpn(va, level);
+            let pte = self.nodes[&current_ppn].entries[vpn];
+            if (pte & PTE_V) == 0 {
+                return TranslateResult::PageFault;
+            }
+            if (pte & (PTE_R | PTE_W | PTE_X)) != 0 {
+                // 叶子节点
+                let ppn = (pte >> PPN_SHIFT) & PPN_MASK;
+                // ✅ 根据 level 取不同宽度的 offset
+                let offset = match level {
+                    0 => va & 0xFFF,           // 普通页：低 12 位
+                    1 => va & 0x1FFFFF,        // 2MB 大页：低 21 位
+                    2 => va & 0x3FFFFFFF,      // 1GB 大页：低 30 位
+                    _ => unreachable!(),
+                };
+                let pa = (ppn << 12) | offset;
+                return TranslateResult::Ok(pa);
+            } else {
+                current_ppn = (pte >> PPN_SHIFT) & PPN_MASK;
+            }
+    }
+    TranslateResult::PageFault
     }
 
     /// 建立大页映射（2MB superpage，在 level 1 设叶子 PTE）。
@@ -154,13 +198,33 @@ impl Sv39PageTable {
         assert_eq!(va % mega_size, 0, "va must be 2MB-aligned");
         assert_eq!(pa % mega_size, 0, "pa must be 2MB-aligned");
 
+        
         // TODO: 实现大页映射
         //
         // 提示：大页映射与普通页映射类似，但只需要遍历到 level 1。
         // 你需要在 level 2 找到或创建中间页表节点，然后在 level 1 写入叶子 PTE。
         // 注意大页的物理页号计算方式与普通页相同（pa >> 12），
         // 但翻译时 offset 包含虚拟地址的低 21 位（VPN[0] 部分 + 12 位页内偏移）。
-        todo!()
+        // todo!()
+        let mut current_ppn = self.root_ppn;
+        for level in (2..=2).rev() {  // 或者 for level in (1..=2).rev() 但在内部判断 if level > 1
+            let vpn = Self::extract_vpn(va, level);
+            let pte = self.nodes[&current_ppn].entries[vpn];
+            if (pte & PTE_V) == 0 {
+                let new_ppn = self.alloc_node();
+                self.nodes.get_mut(&current_ppn).unwrap().entries[vpn] =
+                    (new_ppn << PPN_SHIFT) | PTE_V;
+                current_ppn = new_ppn;
+            } else {
+                current_ppn = (pte >> PPN_SHIFT) & PPN_MASK;
+            }
+        }
+    
+        let vpn = Self::extract_vpn(va, 1);
+        let ppn = pa >> 12;
+        self.nodes.get_mut(&current_ppn).unwrap().entries[vpn] =
+            (ppn << PPN_SHIFT) | PTE_V | flags;
+        
     }
 }
 
